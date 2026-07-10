@@ -10,6 +10,7 @@ def main():
         imgsz=640,
         batch=8,
         workers=2,
+        device=0,
         project="runs/hand_pose",
         name="spellcast_hand"
     )
