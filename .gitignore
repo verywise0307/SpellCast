@@ -21,20 +21,44 @@ htmlcov/
 .env.*
 !.env.example
 
-# Unreal Engine
+# Unreal Engine generated build output and local caches
 Binaries/
 Build/
 DerivedDataCache/
 Intermediate/
 Saved/
+StagedBuilds/
+Script/
+
+# Unreal local/editor state
+AssetRegistryCache/
+Collections/Developers/
+Developers/
+FileOpenOrder/
+Autosaves/
+Backup/
+
+# Unreal generated project and build files
 *.sln
 *.suo
 *.opensdf
 *.sdf
 *.VC.db
 *.VC.opendb
+*.VC.db-shm
+*.VC.db-wal
 *.xcodeproj/
 *.xcworkspace/
+*.code-workspace
+*.uatbuildrecord
+*.tmp
+*.pdb
+*.obj
+*.pch
+*.ipch
+*.exp
+*.lib
+*.dll
 
 # Unreal generated files
 *.generated.h
@@ -55,5 +79,5 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# assets
+# External marketplace assets. Install these separately through Fab.
 /game/SpellCast/Content/ParisStreet/
