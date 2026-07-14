@@ -1,38 +1,45 @@
 import argparse
 import json
-import urllib.request
+from urllib.request import Request, urlopen
 
 
-SPELL_BY_GESTURE = {
-    "fist": "fire_ball",
-    "v": "ice_spear",
-    "palm": "wind_blast",
-    "thumb": "heal",
-    "index": "lightning",
-    "both_hands": "ultimate",
-}
+GESTURES = [
+    "fist",
+    "palm",
+    "peace",
+    "rock",
+    "like",
+    "grip",
+    "holy",
+    "xsign",
+    "hand_heart",
+    "ok",
+]
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Send a test gesture signal.")
-    parser.add_argument("gesture", choices=sorted(SPELL_BY_GESTURE))
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Send a confirmed test gesture.")
+    parser.add_argument("gesture", choices=GESTURES)
+    parser.add_argument("--player-id", default="player1")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", default="8000")
+    parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
-    payload = {
-        "gesture": args.gesture,
-        "spell": SPELL_BY_GESTURE[args.gesture],
-    }
-    data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        f"http://{args.host}:{args.port}/signal",
-        data=data,
+    payload = json.dumps(
+        {
+            "player_id": args.player_id,
+            "gesture": args.gesture,
+            "confidence": 1.0,
+            "held_frames": 8,
+        }
+    ).encode("utf-8")
+    request = Request(
+        f"http://{args.host}:{args.port}/cast",
+        data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-
-    with urllib.request.urlopen(request) as response:
+    with urlopen(request, timeout=2.0) as response:
         print(response.read().decode("utf-8"))
 
 
