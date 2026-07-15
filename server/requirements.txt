@@ -1,2 +1,3 @@
-fastapi
-uvicorn[standard]
+# 이전 설치 명령을 위한 호환 파일이다.
+# 실제 로컬 브리지 의존성은 client_bridge에서 관리한다.
+-r ../client_bridge/requirements.txt

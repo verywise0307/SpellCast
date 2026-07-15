@@ -1,218 +1,84 @@
 # SpellCast Codex 인수인계
 
-이 문서는 다른 PC의 Codex가 현재 프로젝트 상황을 빠르게 파악하고 작업을 이어가기 위한 인수인계 문서다.
+최종 갱신: 2026-07-15
 
-## 1. 프로젝트 개요
+이 문서는 다른 PC에서 프로젝트를 이어서 작업하기 위한 최신 상태 기록이다. 실제 코드와 루트 `README.md`가 이 문서와 다르면 실제 코드를 우선한다.
 
-SpellCast는 웹캠 손동작 인식을 이용하는 고정 위치 1대1 마법사 PvP 게임이다.
+## 프로젝트 개요
 
-- 게임 엔진: Unreal Engine 5
-- AI 인식: HaGRIDv2 기반 YOLOv10n gesture detector
-- detector: Python, Ultralytics, OpenCV
-- 신호 및 게임 상태 서버: FastAPI
-- 플레이어 이동 없음
-- 공격은 상대를 자동 지정
-- 전투의 핵심은 코스트, 활성 마법 3개, 덱 순환, 공격과 방어 타이밍이다.
+SpellCast는 손동작 인식을 사용하는 고정 위치 1대1 마법 PvP 게임이다.
 
-상세 기획은 루트의 `GAME_MECHANICS.txt`를 반드시 함께 읽는다.
+- 게임: Unreal Engine 5 Listen Server
+- 손동작 인식: HaGRIDv2 기반 YOLO detector
+- 로컬 연결: 각 플레이어 PC의 FastAPI client bridge
+- 중앙 서버: 6자리 코드 기반 matchmaking server
+- 플레이어 이동과 별도 쿨다운 규칙은 없다.
+- 6개 주문 중 앞의 3개만 활성 슬롯이며, 사용한 주문은 배열 맨 뒤로 이동한다.
 
-## 2. 디렉터리 역할
+## 현재 폴더 구조
 
 ```text
 SpellCast/
-├─ detect/                 # 플레이어 PC에서 실행되는 웹캠 AI
-│  ├─ main.py
-│  ├─ hagrid-v2-yolov10n.pt
-│  ├─ requirements.txt
-│  └─ README.txt
-├─ server/                 # FastAPI 신호 및 게임 상태 서버
-│  ├─ main.py
-│  ├─ send_test_signal.py
-│  └─ requirements.txt
-├─ game/SpellCast/         # Unreal 프로젝트
-├─ GAME_MECHANICS.txt      # 게임 기획 원본
-└─ CODEX_HANDOFF.md        # 이 문서
+├─ matchmaking_server/  # 중앙 FastAPI 매칭 서버
+├─ client_bridge/       # 각 플레이어 PC의 로컬 FastAPI
+├─ detect/              # YOLO 손동작 인식
+├─ game/SpellCast/      # Unreal 게임과 Listen Server
+└─ server/              # 이전 실행 방식 호환용
 ```
 
-AI 코드는 `server`가 아니라 `detect`에 둔다. detector는 플레이어 클라이언트와 함께 실행되는 companion process다. 카메라 영상은 서버에 전송하지 않는다.
+역할은 다음과 같다.
 
-## 3. 확정된 게임 규칙
+- `matchmaking_server`: 메모리에 6자리 방 코드를 만들고 참가, 하트비트, 시작, 닫기를 처리한다. 현재 DB는 사용하지 않는다.
+- `client_bridge`: `127.0.0.1:8000`에서 해당 PC의 detector와 Unreal만 연결한다.
+- `detect`: 웹캠으로 손동작을 인식해 로컬 브리지의 `/cast`로 전송한다.
+- `game`: Listen Server가 HP, 마나, 마법 슬롯, 공격 판정, 승패의 최종 권한을 가진다.
+- 기존 `server/main.py`는 `client_bridge.main:app`을 불러오는 호환용이다.
 
-- 전체 마법은 10개다.
-- 경기 시작 전에 10개 중 6개를 덱으로 선택한다.
-- 6개 중 앞의 3개만 현재 활성 상태다.
-- 마법을 사용하면 덱 뒤로 이동하고 다음 마법이 활성화된다.
-- 최대 코스트는 10이다.
-- 시작 코스트 초안은 5다.
-- 기본적으로 1.5초마다 코스트가 1 회복된다.
-- 같은 손동작이 8프레임 연속 검출되어야 시전 요청을 보낸다.
-- 손을 유지해도 한 번만 요청하며, 손을 풀거나 다른 동작으로 바뀌어야 다시 요청할 수 있다.
-- 양손 마법은 한손 마법보다 비싸고 강력하다.
-- 플레이어 이동과 수동 조준은 없다.
+## 실행 명령
 
-## 4. 마법 및 HaGRIDv2 매핑
-
-| 번호 | HaGRIDv2 gesture | spell ID | 표시 이름 | 코스트 | 구분 |
-|---:|---|---|---|---:|---|
-| 1 | `fist` | `fire_ball` | 파이어볼 | 2 | 한손 |
-| 2 | `palm` | `wind_blast` | 윈드 블라스트 | 2 | 한손 |
-| 3 | `peace` | `ice_spear` | 아이스 스피어 | 3 | 한손 |
-| 4 | `rock` | `lightning` | 라이트닝 | 4 | 한손 |
-| 5 | `like` | `recovery` | 리커버리 | 4 | 한손 |
-| 6 | `grip` | `mana_drain` | 마나 드레인 | 4 | 한손 |
-| 7 | `holy` | `meteor` | 메테오 | 7 | 양손 |
-| 8 | `xsign` | `arcane_barrier` | 아케인 배리어 | 6 | 양손 |
-| 9 | `hand_heart` | `heart_sanctuary` | 하트 생추어리 | 7 | 양손 |
-| 10 | `ok` | `mana_surge` | 마나 가속 | 3 | 한손 |
-
-마법이 간섭하는 범위는 다음으로 제한한다.
-
-- 투사체
-- 방어막
-- 상대 HP
-- 내 HP
-- 양쪽 코스트
-
-이동 방해, 행동 불능, 활성 슬롯 봉인처럼 별도 복잡한 상태 시스템이 필요한 효과는 사용하지 않는다.
-
-## 5. detector 구현
-
-파일: `detect/main.py`
-
-동작:
-
-1. `detect/hagrid-v2-yolov10n.pt`를 로드한다.
-2. 웹캠 프레임에서 매핑된 10개 gesture 중 신뢰도가 가장 높은 결과를 선택한다.
-3. 동일 gesture가 기본 8프레임 연속 검출되면 서버의 `POST /cast`로 요청한다.
-4. 같은 손을 계속 유지하는 동안 중복 요청하지 않는다.
-5. 서버 승인 또는 거부 이유를 웹캠 화면과 터미널에 표시한다.
-
-기본 실행:
+프로젝트 루트 PowerShell에서 로컬 브리지를 실행한다.
 
 ```powershell
-server\.venv\Scripts\python.exe detect\main.py
+python -m uvicorn client_bridge.main:app --host 127.0.0.1 --port 8000
 ```
 
-저사양 PC 실행 권장:
+가상환경 실행 파일을 직접 사용할 때는 PowerShell 경로 앞에 `./` 또는 `.\`가 필요하다.
 
 ```powershell
-server\.venv\Scripts\python.exe detect\main.py --image-size 416
+.\client_bridge\.venv\Scripts\python.exe -m uvicorn client_bridge.main:app --host 127.0.0.1 --port 8000
 ```
 
-종료 키는 `Q` 또는 `Esc`다.
-
-detector가 전송하는 JSON:
-
-```json
-{
-  "player_id": "player1",
-  "gesture": "fist",
-  "confidence": 0.91,
-  "held_frames": 8
-}
-```
-
-detector는 spell 이름이나 코스트를 결정하지 않는다. 서버가 gesture를 spell로 매핑한다.
-
-## 6. FastAPI 서버 구현
-
-파일: `server/main.py`
-
-서버의 책임:
-
-- gesture와 spell 매핑
-- 최소 신뢰도 0.55 검증
-- 8프레임 이상 검증
-- 현재 활성 3슬롯 검증
-- 코스트 회복 및 차감
-- 6개 덱 순환
-- 승인된 마법에 증가하는 `event_id` 부여
-- Unreal이 조회하는 최신 `/signal` 갱신
-- WebSocket 클라이언트 방송
-
-서버 실행:
+detector만 직접 실행할 때:
 
 ```powershell
-server\.venv\Scripts\python.exe -m uvicorn main:app `
-  --app-dir server `
-  --host 127.0.0.1 `
-  --port 8000
+python detect\main.py
 ```
 
-주요 API:
-
-```text
-GET  /                         서버 상태
-POST /cast                     detector의 시전 요청
-GET  /signal                   Unreal이 최신 승인 이벤트 조회
-GET  /player/{player_id}       현재 코스트, 활성 마법, 덱 순서 조회
-PUT  /player/{player_id}/loadout  6개 덱 설정
-POST /reset                    전체 테스트 상태 초기화
-WS   /ws                       승인 이벤트 실시간 방송
-```
-
-Unreal이 받는 `/signal` 예시:
-
-```json
-{
-  "event_id": 1,
-  "player_id": "player1",
-  "gesture": "fist",
-  "spell": "fire_ball",
-  "cost": 2,
-  "mana": 3,
-  "active_spells": [
-    "wind_blast",
-    "ice_spear",
-    "lightning"
-  ]
-}
-```
-
-기본 덱:
-
-```text
-fire_ball, wind_blast, ice_spear, lightning, recovery, meteor
-```
-
-기본 활성 3슬롯:
-
-```text
-fire_ball, wind_blast, ice_spear
-```
-
-따라서 처음에 `rock`, `holy`, `ok` 등을 인식하면 `spell is not in the active 3 slots`로 거부되는 것이 정상이다.
-
-상태 확인:
+OpenCV 웹캠 창까지 표시하려면:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/player/player1
+python detect\main.py --show-window
 ```
 
-초기화:
+중앙 매칭 서버는 8100 포트 사용을 권장한다.
 
 ```powershell
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/reset
+python -m uvicorn matchmaking_server.main:app --host 0.0.0.0 --port 8100
 ```
 
-웹캠 없이 fist 테스트:
+## detector와 카메라 UI
 
-```powershell
-server\.venv\Scripts\python.exe server\send_test_signal.py fist
-```
+- `detect/main.py`는 인식한 손동작을 `http://127.0.0.1:8000/cast`로 보낸다.
+- detector의 OpenCV 창은 기본적으로 숨겨져 있다.
+- 로컬 브리지 카메라 경로는 `/camera`, `/camera/frame`, `/camera/latest.jpg`이다.
+- Unreal UI에서는 Web Browser 위젯으로 `http://127.0.0.1:8000/camera`를 연다.
+- 카메라 페이지가 요청되면 detector가 자동 실행되고, 카메라 요청이 일정 시간 끊기면 종료된다.
+- Unreal 프로젝트에서 내장 `WebBrowserWidget` 플러그인을 활성화했다.
+- PIE 폴링이 끊겼다가 다시 시작되면 이전 `/signal` 이벤트를 초기화해 지난 주문이 재실행되지 않도록 했다.
 
-## 7. Unreal Blueprint 구조
+## 마법 ID와 비용
 
-현재 생성된 주요 Blueprint asset:
-
-```text
-/Game/blueprints/BP_gamemode
-/Game/blueprints/BP_playercontroller
-/Game/blueprints/ESpellID
-/Game/Characters/witch/BP_witch
-```
-
-`ESpellID` 항목:
+`ESpellID`:
 
 ```text
 FireBall
@@ -227,213 +93,121 @@ HeartSanctuary
 ManaSurge
 ```
 
-### BP_gamemode 필수 설정
+비용은 `ST_SpellData` 구조체와 `DT_SpellData` Data Table에서 관리한다.
+
+| ESpellID 및 Data Table 행 이름 | Cost |
+|---|---:|
+| FireBall | 2 |
+| WindBlast | 2 |
+| IceSpear | 3 |
+| Lightning | 4 |
+| Recovery | 4 |
+| ManaDrain | 4 |
+| Meteor | 7 |
+| ArcaneBarrier | 6 |
+| HeartSanctuary | 7 |
+| ManaSurge | 3 |
+
+중요: Data Table 행 이름은 `ESpellID` 내부 이름과 대소문자까지 정확히 같아야 한다. `GetSpellCost`에서는 `Enum → String → Name`으로 Row Name을 만들어 조회한다. Display Name을 사용하지 않는다.
+
+## Unreal Blueprint 현재 구조
+
+현재 작업 트리에 있는 핵심 자산:
 
 ```text
-Default Pawn Class      = BP_witch
-Player Controller Class = BP_playercontroller
+/Game/blueprints/BP_gamemode
+/Game/blueprints/BP_playercontroller
+/Game/blueprints/BP_SpellCastPlayerState
+/Game/blueprints/ESpellID
+/Game/blueprints/ST_SpellData
+/Game/blueprints/DT_SpellData
 ```
 
-맵 `testmap`의 World Settings:
+`BP_gamemode`:
+
+- Player Controller Class: `BP_playercontroller`
+- Player State Class: `BP_SpellCastPlayerState`
+- Default Pawn Class: 현재 사용하는 마녀 Pawn
+
+`BP_playercontroller`:
+
+- 로컬 컨트롤러만 로컬 브리지의 `/signal`을 폴링한다.
+- 받은 주문 문자열을 `ESpellID`로 바꾼다.
+- 소유 클라이언트가 Server RPC `Server_RequestCast(SpellID)`를 호출한다.
+- Server RPC 안에서 자기 `BP_SpellCastPlayerState`를 가져온다.
+- `CanCastSpell`이 참일 때만 `CommitCast`를 실행한다.
+
+`BP_SpellCastPlayerState`:
+
+- 플레이어별 HP, Mana, MaxMana, SpellCycle을 관리하는 위치다.
+- Mana와 필요한 상태 변수는 RepNotify로 설정한다.
+- 실제 상태 변경은 `Has Authority`가 참인 Listen Server에서만 수행한다.
+- 서버에서 변경한 RepNotify 값은 Unreal 네트워크 복제로 클라이언트에 전달된다. Python/FastAPI는 이 복제에 관여하지 않는다.
+
+## 주문 사용 판정
+
+`SpellCycle`은 6개의 `ESpellID` 배열이며 인덱스 0, 1, 2가 현재 활성 슬롯이다.
+
+`CanCastSpell(Spell)`:
 
 ```text
-GameMode Override = BP_gamemode
+SpellCycle 길이가 3 이상인지 확인
+→ Spell이 SpellCycle[0], [1], [2] 중 하나인지 확인
+→ DT_SpellData에서 Cost 조회
+→ Mana >= Cost 확인
+→ 모든 조건을 AND하여 반환
 ```
 
-한 번 `BP_playercontroller`가 GameMode에 등록되지 않아 HTTP와 모든 이벤트가 실행되지 않는 문제가 있었다. 학원 PC에서 반드시 이 설정을 다시 확인한다.
-
-### BP_playercontroller 책임
-
-- BeginPlay에서 반복 타이머 시작
-- 0.5초 간격으로 `GET http://127.0.0.1:8000/signal`
-- HTTP 완료 이벤트에서 성공 여부 확인
-- JSON의 `event_id`와 `spell` 추출
-- 새 event_id일 때만 spell 문자열을 `ESpellID`로 변환
-- Controlled Pawn인 `BP_witch`에 `ExecuteSpell(SpellID)` 전달
-
-안전한 HTTP 흐름:
+`CommitCast(SpellID)`:
 
 ```text
-PollSpellSignal
-→ RequestInFlight == false
-→ RequestInFlight = true
-→ Http Request
-
-On Request Complete
-→ RequestInFlight = false
-→ Branch(bSuccessful)
-   ├─ True  → JSON 파싱
-   └─ False → JSON을 파싱하지 않고 종료 또는 오류 출력
+Cost = GetSpellCost(SpellID)
+→ Mana = Mana - Cost
+→ SpellCycle에서 SpellID Remove Item
+→ SpellCycle 맨 뒤에 SpellID Add
 ```
 
-중요:
+오늘 마나가 줄지 않던 원인은 `Get Data Table Row`에서 `Row Not Found`가 실행된 것이었다. Enum에서 만든 Row Name과 Data Table의 실제 행 이름을 정확히 맞춰 해결했다.
 
-- `Http Request` 노드의 오른쪽 실행 핀은 응답 성공 핀이 아니다.
-- Return Value에서 `Assign On Request Complete` 또는 `Bind Event to On Request Complete`를 사용한다.
-- 실패 응답을 JSON으로 파싱하지 않는다.
-- 요청 진행 중 다음 요청을 시작하지 않는다.
-- 폴링 간격은 0.1초가 아니라 0.5초를 권장한다.
+## 마나 자동 회복
 
-서버 문자열을 Enum으로 바꾸는 흐름:
+`BP_SpellCastPlayerState`에서 서버만 반복 타이머를 실행한다.
 
 ```text
-Switch on String
-├─ fire_ball       → ReceiveSpell(FireBall)
-├─ wind_blast      → ReceiveSpell(WindBlast)
-├─ ice_spear       → ReceiveSpell(IceSpear)
-├─ lightning       → ReceiveSpell(Lightning)
-├─ recovery        → ReceiveSpell(Recovery)
-├─ mana_drain      → ReceiveSpell(ManaDrain)
-├─ meteor          → ReceiveSpell(Meteor)
-├─ arcane_barrier  → ReceiveSpell(ArcaneBarrier)
-├─ heart_sanctuary → ReceiveSpell(HeartSanctuary)
-└─ mana_surge      → ReceiveSpell(ManaSurge)
+BeginPlay
+→ Has Authority
+→ 반복 Timer 시작
+→ RegenerateMana
+→ Mana < MaxMana이면 Set Mana = Clamp(Mana + 1, 0, MaxMana)
 ```
 
-`ReceiveSpell`은 PlayerController에 있고, 실제 마법 분기는 캐릭터에 둔다.
+- 설정한 일정 시간마다 마나가 1 증가한다.
+- `Mana`는 RepNotify이므로 서버 값이 각 클라이언트로 복제된다.
+- PIE가 끝나 PlayerState가 제거되면 해당 타이머도 함께 사라진다.
 
-```text
-BP_playercontroller.ReceiveSpell(ESpellID)
-→ Get Controlled Pawn
-→ Cast To BP_witch
-→ BP_witch.ExecuteSpell(ESpellID)
-```
+## 2026-07-15 완료 지점
 
-### BP_witch 책임
+- 중앙 매칭 서버, 로컬 브리지, detector, Unreal Listen Server의 역할을 분리했다.
+- 6자리 방 코드 기반 메모리 매칭 서버 코드를 만들었다.
+- 로컬 브리지에 detector 자동 실행, 숨김 실행, 카메라 스트림 경로를 구현했다.
+- `BP_SpellCastPlayerState`를 만들고 게임 상태를 Unreal 서버가 관리하도록 구성했다.
+- 클라이언트의 주문 신호를 PlayerController Server RPC로 Listen Server에 전달하도록 구성했다.
+- 활성 3슬롯 검사, Data Table 비용 조회, 마나 차감, 6슬롯 순환을 구현했다.
+- Data Table Row Name 불일치로 마나가 줄지 않던 오류를 수정했다.
+- 서버 권한의 마나 자동 회복을 구성했다.
 
-```text
-ExecuteSpell(SpellID)
-→ Switch on ESpellID
-   ├─ FireBall       → Spell_FireBall
-   ├─ WindBlast      → Spell_WindBlast
-   ├─ IceSpear       → Spell_IceSpear
-   ├─ Lightning      → Spell_Lightning
-   ├─ Recovery       → Spell_Recovery
-   ├─ ManaDrain      → Spell_ManaDrain
-   ├─ Meteor         → Spell_Meteor
-   ├─ ArcaneBarrier  → Spell_ArcaneBarrier
-   ├─ HeartSanctuary → Spell_HeartSanctuary
-   └─ ManaSurge      → Spell_ManaSurge
-```
+## 아직 검증하거나 구현할 작업
 
-현재 각 마법 이벤트에는 연결 확인용 `Print String`이 달려 있다. detector와 서버 연결은 확인됐으며 Unreal 이벤트 수신도 사용자가 연결됐다고 확인했다.
+- PIE에서 Listen Server 1개와 Client 1개를 띄워 각 플레이어의 `Mana`와 `SpellCycle` 복제를 실제 2인 환경에서 검증한다.
+- `OnRep_Mana`, `OnRep_SpellCycle`에서 각 클라이언트 UI를 갱신한다.
+- `ExecuteSpell` 및 각 주문의 실제 효과, 피해, 회복을 구현한다.
+- HP, 피격, 승패 판정을 Listen Server 권한으로 구현한다.
+- 6자리 매칭 결과를 Unreal의 Listen Server 생성 및 접속 흐름과 연결한다.
 
-## 8. 확인된 동작
+## Git 주의사항
 
-- 공식 HaGRIDv2 YOLOv10n 모델에서 양손 동작 인식이 잘 된다.
-- detector의 8프레임 확인이 동작한다.
-- detector에서 `/cast`로 요청이 전달된다.
-- 서버의 활성 3슬롯 검증이 동작한다.
-- 승인된 마법은 `event_id`와 함께 `/signal`에 반영된다.
-- 서버 상태 조회 결과 덱 순환이 정상 동작했다.
-- Unreal PlayerController와 캐릭터 이벤트 연결이 완료됐다.
-
-실제 확인했던 순환 예:
-
-```text
-초기:
-fire_ball, wind_blast, ice_spear, lightning, recovery, meteor
-
-fire_ball과 ice_spear 사용 후:
-wind_blast, lightning, recovery, meteor, fire_ball, ice_spear
-```
-
-## 9. 저사양 학원 PC 대응
-
-학원 PC에서 Unreal PIE와 YOLO를 동시에 실행하면 GPU 또는 VRAM 부족 가능성이 있다.
-
-권장 순서:
-
-1. FastAPI 서버 실행
-2. `http://127.0.0.1:8000` 응답 확인
-3. Unreal Editor 및 PIE 실행
-4. detector를 낮은 이미지 크기로 실행
-
-```powershell
-server\.venv\Scripts\python.exe detect\main.py --image-size 416
-```
-
-필요하면 `--image-size 320`까지 낮춘다.
-
-Unreal 설정:
-
-```text
-Engine Scalability Settings = Low 또는 Medium
-Shadows, Global Illumination, Reflections, Effects 낮추기
-```
-
-D3D12 문제가 있으면 DX11 실행을 시험한다.
-
-```powershell
-UnrealEditor.exe D:\SpellCast\game\SpellCast\SpellCast.uproject -d3d11
-```
-
-크래시 또는 종료 분석 로그:
-
-```text
-game/SpellCast/Saved/Logs/SpellCast.log
-```
-
-판별 기준:
-
-- `Out of video memory`, `D3D device lost`: GPU/VRAM 문제
-- `Blueprint Runtime Error`: Blueprint 실행 문제
-- `HttpBlueprint`: 요청 중첩 또는 HTTP 처리 문제
-- 오류 없이 `BeginTearingDown`: 크래시가 아니라 정상 PIE 종료
-
-## 10. 모델 관련 기록
-
-처음에 잘못 받은 제3자 12클래스 모델은 양손 클래스를 지원하지 않았다. 사용하면 안 된다.
-
-현재 사용해야 하는 모델:
-
-```text
-detect/hagrid-v2-yolov10n.pt
-```
-
-공식 출처:
-
-```text
-https://github.com/hukenovs/hagrid
-```
-
-공식 모델 다운로드 URL:
-
-```text
-https://rndml-team-cv.obs.ru-moscow-1.hc.sbercloud.ru/datasets/hagrid_v2/models/YOLOv10n_gestures.pt
-```
-
-## 11. 아직 구현하지 않은 것
-
-- 실제 마법 Actor와 VFX
-- 투사체 충돌 및 피해 판정
-- HP UI와 코스트 UI
-- 활성 3슬롯 UI와 덱 순환 애니메이션
-- 서버의 HP, 방어막, 투사체 적중 결과 판정
-- 멀티플레이 플레이어 인증 및 각 player_id 연결
-- 실제 1대1 상대 연결
-- 마법별 피해량, 회복량, 지속시간 최종 밸런스
-- detector를 게임과 함께 자동 실행하는 런처 또는 패키징
-- 학원 PC에서의 실제 성능 및 크래시 검증
-
-현재 서버는 코스트와 덱 순환을 판정하고 승인된 spell 이벤트를 Unreal에 보낸다. HP와 투사체 판정은 아직 Unreal의 마법 Blueprint와 함께 구현해야 한다.
-
-## 12. 다른 Codex에게 줄 시작 프롬프트
-
-학원 PC에서 저장소를 pull한 후 다음과 같이 요청한다.
-
-```text
-CODEX_HANDOFF.md와 GAME_MECHANICS.txt를 처음부터 끝까지 읽어.
-현재 SpellCast 구현과 확정된 설계를 파악한 뒤 이어서 작업해줘.
-detect, server, game의 역할 분리를 유지하고 기존 사용자 Blueprint 및 에셋 변경을 보존해.
-작업 전에 git status와 최신 파일을 확인하고, 인수인계 문서와 실제 코드가 다르면 실제 코드를 우선하되 차이를 보고해.
-```
-
-## 13. Git 주의사항
-
-- 작업 트리에 Unreal 에셋 변경과 World Partition External Actor 삭제가 존재할 수 있다.
-- 이 변경들은 사용자가 Unreal Editor에서 작업한 내용이므로 임의 복구하거나 삭제하지 않는다.
-- `git reset --hard`, `git checkout --`, 무단 파일 삭제를 사용하지 않는다.
-- `.venv`는 Git에 올리지 않는다.
-- `.pt` 모델은 크기가 크므로 Git LFS 또는 다운로드 안내 방식 사용을 검토한다.
-- 다른 PC로 이동하기 전 필요한 코드와 Blueprint를 반드시 커밋하고 push한다.
+- 현재 작업 트리에는 Unreal `.uasset`, 맵, UI, Python 코드 등 변경 파일이 매우 많다.
+- 이 변경은 사용자가 Unreal Editor에서 작업한 내용이므로 임의로 되돌리거나 삭제하지 않는다.
+- `git reset --hard`, `git checkout --` 같은 복구 명령을 함부로 실행하지 않는다.
+- 다른 PC에서 이어서 작업하기 전에 Unreal Editor에서 Blueprint를 컴파일하고 모두 저장한다.
+- 필요한 파일을 커밋한 뒤 원격 저장소에 push해야 다른 PC에서 받을 수 있다.

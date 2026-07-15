@@ -31,12 +31,21 @@ def parse_args() -> argparse.Namespace:
         "--model",
         default=str(Path(__file__).with_name("hagrid-v2-yolov10n.pt")),
     )
+    # detector는 중앙 매칭 서버가 아니라 같은 PC의 client_bridge로만 보낸다.
     parser.add_argument("--server", default="http://127.0.0.1:8000/cast")
     parser.add_argument("--player-id", default="player1")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--confidence", type=float, default=0.55)
     parser.add_argument("--hold-frames", type=int, default=8)
-    parser.add_argument("--image-size", type=int, default=800)
+    parser.add_argument("--image-size", type=int, default=300)
+    # 카메라 원본도 인터넷으로 보내지 않고 localhost에만 보낸다.
+    parser.add_argument("--preview-server", default="http://127.0.0.1:8000/camera/frame")
+    parser.add_argument("--preview-fps", type=float, default=20.0)
+    parser.add_argument(
+        "--show-window",
+        action="store_true",
+        help="Show the local OpenCV preview window for debugging.",
+    )
     return parser.parse_args()
 
 
@@ -83,12 +92,31 @@ def request_cast(
             data = json.loads(response.read().decode("utf-8"))
         if data.get("accepted"):
             signal = data["signal"]
-            return True, f"CAST {signal['spell']} | mana {signal['mana']}"
+            return True, f"CAST {signal['spell']}"
         return False, f"REJECTED: {data.get('reason', 'unknown reason')}"
     except HTTPError as error:
         return False, f"SERVER ERROR: HTTP {error.code}"
     except (URLError, TimeoutError, json.JSONDecodeError):
         return False, "SERVER OFFLINE"
+
+
+def send_preview_frame(server_url: str, frame) -> None:
+    encoded, jpeg = cv2.imencode(
+        ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60]
+    )
+    if not encoded:
+        return
+    request = Request(
+        server_url,
+        data=jpeg.tobytes(),
+        headers={"Content-Type": "image/jpeg"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=0.25):
+            pass
+    except (HTTPError, URLError, TimeoutError):
+        pass
 
 
 def main() -> None:
@@ -113,9 +141,13 @@ def main() -> None:
     server_message = "Waiting for gesture"
     server_message_until = 0.0
     previous_time = time.perf_counter()
+    next_preview_at = 0.0
     fps = 0.0
 
-    print("Press Q or Esc to quit.")
+    if args.show_window:
+        print("Press Q or Esc to quit.")
+    else:
+        print("Detector running without a local preview window.")
     try:
         while True:
             ok, frame = camera.read()
@@ -201,12 +233,17 @@ def main() -> None:
                 (255, 255, 255),
                 2,
             )
-            cv2.imshow("SpellCast Detector", frame)
-            if cv2.waitKey(1) & 0xFF in (ord("q"), ord("Q"), 27):
-                break
+            if args.preview_fps > 0 and now >= next_preview_at:
+                next_preview_at = now + 1.0 / args.preview_fps
+                send_preview_frame(args.preview_server, frame)
+            if args.show_window:
+                cv2.imshow("SpellCast Detector", frame)
+                if cv2.waitKey(1) & 0xFF in (ord("q"), ord("Q"), 27):
+                    break
     finally:
         camera.release()
-        cv2.destroyAllWindows()
+        if args.show_window:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

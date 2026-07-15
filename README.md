@@ -1,140 +1,121 @@
 # SpellCast
 
-SpellCast는 웹캠으로 인식한 손동작을 Unreal Engine 5 안의 마법 입력으로 연결하는 실시간 PvP 액션 게임 프로젝트입니다.
+SpellCast는 웹캠 손동작을 마법 입력으로 사용하는 Unreal Engine 5 PvP 게임이다.
 
-현재 단계에서는 YOLO 모델을 붙이기 전에, 먼저 **FastAPI에서 보낸 신호를 UE5가 받을 수 있는지** 확인하는 테스트 서버를 구성합니다.
-
-# 모델 출처
-
-https://github.com/hukenovs/hagrid
-
-## 현재 프로젝트 목표
-
-```text
-FastAPI
--> gesture / spell 신호 생성
--> UE5에서 HTTP 또는 WebSocket으로 수신
--> Print String 또는 임시 마법 발동
-```
-
-## 폴더 구조
+## 폴더 역할
 
 ```text
 SpellCast/
-├─ server/
-│  ├─ main.py
-│  ├─ requirements.txt
-│  └─ send_test_signal.py
-├─ .gitignore
-└─ README.md
+├─ matchmaking_server/  중앙 방 코드 매칭 서버
+├─ client_bridge/       각 플레이어 PC의 로컬 연결 서버
+├─ detect/              YOLO 손동작 인식기
+├─ game/                Unreal 게임과 Listen Server
+└─ server/              이전 명령 호환 및 모델 학습 파일
 ```
 
-## FastAPI 서버 실행
+### matchmaking_server
 
-처음 실행하는 경우:
+- 인터넷 서버에서 한 번만 실행한다.
+- 6자리 방 코드 생성, 참가, heartbeat, 방 종료만 처리한다.
+- 카메라와 detector를 실행하지 않는다.
+- HP, 마나, 피해를 판정하지 않는다.
+
+### client_bridge
+
+- 각 플레이어 PC에서 하나씩 실행한다.
+- 주소는 `127.0.0.1:8000`만 사용한다.
+- detector 실행 및 종료, 카메라 UI, 손동작 이벤트 전달을 담당한다.
+- 카메라 이미지를 중앙 서버에 보내지 않는다.
+
+### detect
+
+- 같은 PC의 `client_bridge`에만 연결한다.
+- 확정된 gesture를 `/cast`로 전송한다.
+- UI용 JPEG 프레임을 `/camera/frame`으로 전송한다.
+
+### game
+
+- 방장은 `battlemap?listen`으로 Unreal Listen Server가 된다.
+- Listen Server가 HP, 마나, 활성 슬롯, 피해, 승패를 최종 판정한다.
+- 중앙 FastAPI 서버는 게임 판정을 하지 않는다.
+
+## 1. 로컬 브리지 실행
+
+각 플레이어 PC에서 실행한다.
 
 ```powershell
-cd C:\Users\M\Desktop\SpellCast\server
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn main:app --host 127.0.0.1 --port 8000
+cd C:\Users\M\Desktop\SpellCast
+python -m venv client_bridge\.venv
+client_bridge\.venv\Scripts\python.exe -m pip install -r client_bridge\requirements.txt
+client_bridge\.venv\Scripts\python.exe -m uvicorn client_bridge.main:app --host 127.0.0.1 --port 8000
 ```
 
-이미 가상환경과 패키지 설치가 끝난 경우:
-
-```powershell
-cd C:\Users\M\Desktop\SpellCast\server
-.\.venv\Scripts\Activate.ps1
-uvicorn main:app --host 127.0.0.1 --port 8000
-```
-
-서버가 정상 실행되면 아래 주소에서 상태를 확인할 수 있습니다.
+확인 주소:
 
 ```text
 http://127.0.0.1:8000/
+http://127.0.0.1:8000/docs
+http://127.0.0.1:8000/camera
 ```
 
-## 테스트 신호 보내기
+Unreal Web Browser 위젯이 `/camera`를 열면 detector가 자동 실행된다. PIE가 끝나고 카메라 요청이 5초 동안 없으면 detector도 종료된다.
 
-서버를 켜둔 상태에서 새 터미널을 열고 실행합니다.
+## 2. 중앙 매칭 서버 실행
+
+개발 PC에서 시험할 때는 8100 포트를 사용한다.
 
 ```powershell
-cd C:\Users\M\Desktop\SpellCast\server
-.\.venv\Scripts\Activate.ps1
-python send_test_signal.py fist
+cd C:\Users\M\Desktop\SpellCast
+python -m venv matchmaking_server\.venv
+matchmaking_server\.venv\Scripts\python.exe -m pip install -r matchmaking_server\requirements.txt
+matchmaking_server\.venv\Scripts\python.exe -m uvicorn matchmaking_server.main:app --host 0.0.0.0 --port 8100
 ```
 
-사용 가능한 손동작 값:
+확인 주소:
 
 ```text
-fist, v, palm, thumb, index, both_hands
+http://127.0.0.1:8100/
+http://127.0.0.1:8100/docs
 ```
 
-각 손동작은 현재 아래 마법 신호로 변환됩니다.
+## 3. detector 수동 실행
+
+평소에는 로컬 브리지가 자동 실행한다. 디버그 창이 필요할 때만 수동 실행한다.
+
+```powershell
+detect\.venv\Scripts\python.exe detect\main.py --image-size 320 --show-window
+```
+
+## 주요 로컬 API
 
 ```text
-fist       -> fire_ball
-v          -> ice_spear
-palm       -> wind_blast
-thumb      -> heal
-index      -> lightning
-both_hands -> ultimate
+POST /cast                 detector가 확정 손동작 전송
+GET  /signal               Unreal이 최신 손동작 확인
+GET  /camera               Unreal UI용 좌우 반전 영상 페이지
+POST /camera/frame         detector가 JPEG 프레임 전송
+POST /detector/start       detector 수동 시작
+POST /detector/stop        detector 수동 종료
 ```
 
-## UE5 HTTP 수신 테스트
-
-가장 먼저 추천하는 방식은 UE5에서 아래 주소를 반복해서 읽는 것입니다.
+## 주요 매칭 API
 
 ```text
-GET http://127.0.0.1:8000/signal
+POST   /rooms                    방 생성
+GET    /rooms/{code}             방 상태 확인
+POST   /rooms/{code}/join        코드로 참가
+POST   /rooms/{code}/heartbeat   방장 생존 알림
+POST   /rooms/{code}/start       게임 시작 상태
+POST   /rooms/{code}/close       방 종료
+DELETE /rooms/{code}             방 종료
 ```
 
-예상 응답:
+## 테스트
 
-```json
-{
-  "gesture": "fist",
-  "spell": "fire_ball"
-}
+개발 의존성 설치 후 실행한다.
+
+```powershell
+matchmaking_server\.venv\Scripts\python.exe -m pip install -r matchmaking_server\requirements-dev.txt
+matchmaking_server\.venv\Scripts\python.exe -m unittest discover -s matchmaking_server -p "test_*.py" -v
+client_bridge\.venv\Scripts\python.exe -m pip install -r client_bridge\requirements-dev.txt
+client_bridge\.venv\Scripts\python.exe -m unittest discover -s client_bridge -p "test_*.py" -v
 ```
-
-추천 Blueprint 흐름:
-
-```text
-Event BeginPlay
--> Set Timer by Event, 0.1초 반복
--> HTTP GET /signal
--> JSON 파싱
--> 이전 spell 값과 다르면
--> Print String 또는 임시 마법 발동
-```
-
-이 단계에서는 실제 마법 이펙트보다 `fire_ball`, `ice_spear` 같은 문자열이 UE5 화면에 찍히는지 확인하는 것이 중요합니다.
-
-## UE5 WebSocket 수신 테스트
-
-더 실시간에 가까운 방식이 필요하면 WebSocket을 사용할 수 있습니다.
-
-```text
-ws://127.0.0.1:8000/ws
-```
-
-`POST /signal`로 새 손동작 신호가 들어오면, 서버는 연결된 WebSocket 클라이언트에게 아래 형태의 JSON을 전송합니다.
-
-```json
-{
-  "gesture": "fist",
-  "spell": "fire_ball"
-}
-```
-
-초기 테스트는 HTTP 방식으로 먼저 성공시킨 뒤, 반응 속도가 부족하다고 느껴질 때 WebSocket으로 넘어가는 것을 추천합니다.
-
-## 다음 단계
-
-1. UE5에서 `/signal` 값을 받아 `Print String`으로 출력
-2. spell 값이 바뀔 때만 이벤트 발생
-3. `fire_ball` 신호를 임시 투사체 발사로 연결
-4. YOLO 손동작 인식 결과를 `POST /signal`로 연결
-5. 쿨타임, 마나, 오발동 방지 로직 추가
