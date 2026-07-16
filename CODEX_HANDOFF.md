@@ -1,6 +1,6 @@
 # SpellCast Codex 인수인계
 
-최종 갱신: 2026-07-15
+최종 갱신: 2026-07-16
 
 이 문서는 다른 PC에서 프로젝트를 이어서 작업하기 위한 최신 상태 기록이다. 실제 코드와 루트 `README.md`가 이 문서와 다르면 실제 코드를 우선한다.
 
@@ -76,6 +76,35 @@ python -m uvicorn matchmaking_server.main:app --host 0.0.0.0 --port 8100
 - Unreal 프로젝트에서 내장 `WebBrowserWidget` 플러그인을 활성화했다.
 - PIE 폴링이 끊겼다가 다시 시작되면 이전 `/signal` 이벤트를 초기화해 지난 주문이 재실행되지 않도록 했다.
 
+### 실시간 탐지 UI API
+
+`detect/main.py`가 현재 손동작 상태를 로컬 브리지의 `POST /detection`으로 보내고,
+Unreal은 `GET http://127.0.0.1:8000/detection`으로 읽는다.
+
+```json
+{
+  "gesture": "fist",
+  "confidence": 0.87,
+  "held_frames": 5,
+  "required_frames": 8,
+  "held_seconds": 0.5,
+  "required_seconds": 0.8,
+  "detected": true,
+  "spell": "FireBall",
+  "progress": 0.625,
+  "confirmed": false
+}
+```
+
+- `progress`는 UMG Progress Bar의 `Percent`에 그대로 넣을 수 있다.
+- detector 갱신이 0.5초 이상 끊기면 `/detection`은 미탐지 상태를 반환한다.
+- 주문 확정은 같은 손동작을 연속 0.8초 유지했을 때 발생한다.
+- 손동작이 사라지거나 다른 손동작으로 바뀌면 누적 상태가 초기화된다.
+- 탐지, 상태 전송, 카메라 UI 전송 기본값은 모두 10FPS다.
+- UI용 카메라 프레임은 중앙을 정사각형으로 자른 뒤 320×320 JPEG로 전송한다.
+- YOLO 기본 장치는 Unreal과 GPU 경쟁을 줄이기 위해 `cpu`다. 필요하면 detector의 `--device` 옵션으로 바꾼다.
+- `/camera` 페이지는 100ms마다 이미지를 갱신한다.
+
 ## 마법 ID와 비용
 
 `ESpellID`:
@@ -109,6 +138,21 @@ ManaSurge
 | ManaSurge | 3 |
 
 중요: Data Table 행 이름은 `ESpellID` 내부 이름과 대소문자까지 정확히 같아야 한다. `GetSpellCost`에서는 `Enum → String → Name`으로 Row Name을 만들어 조회한다. Display Name을 사용하지 않는다.
+
+detector가 반환하는 `spell` 문자열도 같은 이름을 사용한다.
+
+```text
+fist       -> FireBall
+palm       -> WindBlast
+peace      -> IceSpear
+rock       -> Lightning
+like       -> Recovery
+grip       -> ManaDrain
+holy       -> Meteor
+xsign      -> ArcaneBarrier
+hand_heart -> HeartSanctuary
+ok         -> ManaSurge
+```
 
 ## Unreal Blueprint 현재 구조
 
@@ -196,6 +240,40 @@ BeginPlay
 - Data Table Row Name 불일치로 마나가 줄지 않던 오류를 수정했다.
 - 서버 권한의 마나 자동 회복을 구성했다.
 
+## 2026-07-16 파일로 확인된 작업
+
+### Python 코드
+
+- `client_bridge/main.py`에 실시간 손동작 상태용 `POST/GET /detection` API를 추가했다.
+- `/detection`에 탐지 여부, gesture, ESpellID 형식 spell, 신뢰도, 누적 프레임, 누적 시간, 진행률, 확정 여부가 포함된다.
+- detector 판정을 가변 추론 프레임 수 대신 같은 동작을 0.8초 유지하는 시간 기준으로 변경했다.
+- detector 기본 탐지·상태·영상 전송 빈도를 10FPS로 제한했다.
+- YOLO 기본 실행 장치를 CPU로 변경하고 `--device` 옵션을 추가했다.
+- 카메라 UI 전송 이미지를 320×320으로 축소하고 브라우저 갱신 간격을 100ms로 변경했다.
+- 탐지 결과의 모든 spell 문자열을 `ESpellID` 및 Data Table 행 이름과 같은 PascalCase로 통일했다.
+- 관련 테스트 코드와 `client_bridge/README.md`, `detect/README.txt`, `GAME_MECHANICS.txt`를 갱신했다.
+- Python 파일의 문법 검사는 통과했다.
+- FastAPI 전체 테스트는 실행하지 못했다. 현재 `detect/.venv`와 `server/.venv`가 삭제된 Python 3.11 경로를 가리키며, 문서에 있는 `client_bridge/.venv`는 작업 폴더에 없다.
+
+### UI 이미지와 Unreal 자산
+
+- `/Game/UI/spellcard`에 10종 주문 카드 PNG 및 Unreal 임포트 자산이 존재한다.
+- `/Game/UI/InGame`에 다음 HUD PNG와 임포트 자산이 존재한다.
+  - `OpponentStatusFrame`
+  - `PlayerStatusFrame`
+  - `SpellSlotFrame`
+  - `WebcamFrame`
+  - `GesturePanel`
+  - `CombatLogPanel`
+  - `ArcaneCrosshair`
+  - `DamageDirectionRight`
+  - `InGameHUD_Atlas`
+  - `circle`
+- `/Game/UI/font`에 빛의 계승자 Regular/Bold 폰트 자산이 존재한다.
+- `/Game/UI/WBP`에 `WBP_choosecards`, `WBP_holdingspell`, `WBP_webcam` 자산이 존재한다.
+- 오늘 수정된 Unreal 바이너리 자산으로 `BP_SpellCastPlayerState`, `BP_playercontroller`, `DT_SpellData`, `WBP_webcam`, `battlemap`이 확인된다.
+- `.uasset` 내부 Blueprint 노드 연결은 텍스트로 검사할 수 없으므로 위 자산의 세부 기능 완료 여부는 이 문서에서 단정하지 않는다.
+
 ## 아직 검증하거나 구현할 작업
 
 - PIE에서 Listen Server 1개와 Client 1개를 띄워 각 플레이어의 `Mana`와 `SpellCycle` 복제를 실제 2인 환경에서 검증한다.
@@ -203,6 +281,11 @@ BeginPlay
 - `ExecuteSpell` 및 각 주문의 실제 효과, 피해, 회복을 구현한다.
 - HP, 피격, 승패 판정을 Listen Server 권한으로 구현한다.
 - 6자리 매칭 결과를 Unreal의 Listen Server 생성 및 접속 흐름과 연결한다.
+- `WBP_choosecards`의 30초 선택 종료, 6개 주문 제출, 위젯 종료 흐름을 PIE에서 검증한다.
+- `BP_playercontroller`의 `Server_SetSpellCycle(ESpellID Array)`가 서버에서 배열 길이·중복을 검증하고 서버 PlayerState의 `SpellCycle`을 설정하는지 확인한다.
+- 선택된 6개 주문의 순서 섞기가 서버 권한에서 수행되는지 확인한다.
+- `/signal`과 `/detection` 완료 이벤트가 각각 별도 콜백으로 연결됐는지 확인한다.
+- 인게임에서 detector CPU 실행과 10FPS 카메라 설정 적용 후 실제 게임 FPS를 측정한다.
 
 ## Git 주의사항
 

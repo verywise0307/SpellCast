@@ -20,19 +20,20 @@ from pydantic import BaseModel, Field
 # detector와 서버가 모두 사용하는 손동작 → 마법 이름 표다.
 # 실제 마나, 활성 슬롯, 피해 판정은 Unreal Listen Server가 담당해야 한다.
 SPELL_BY_GESTURE = {
-    "fist": "fire_ball",
-    "palm": "wind_blast",
-    "peace": "ice_spear",
-    "rock": "lightning",
-    "like": "recovery",
-    "grip": "mana_drain",
-    "holy": "meteor",
-    "xsign": "arcane_barrier",
-    "hand_heart": "heart_sanctuary",
-    "ok": "mana_surge",
+    "fist": "FireBall",
+    "palm": "WindBlast",
+    "peace": "IceSpear",
+    "rock": "Lightning",
+    "like": "Recovery",
+    "grip": "ManaDrain",
+    "holy": "Meteor",
+    "xsign": "ArcaneBarrier",
+    "hand_heart": "HeartSanctuary",
+    "ok": "ManaSurge",
 }
 
 REQUIRED_HOLD_FRAMES = 8
+REQUIRED_HOLD_SECONDS = 0.8
 MIN_CONFIDENCE = 0.55
 
 
@@ -43,6 +44,7 @@ class GestureRequest(BaseModel):
     gesture: str
     confidence: float = Field(ge=0.0, le=1.0)
     held_frames: int = Field(ge=1)
+    held_seconds: float = Field(default=0.0, ge=0.0)
 
 
 class LocalSignal(BaseModel):
@@ -52,6 +54,26 @@ class LocalSignal(BaseModel):
     player_id: str = "none"
     gesture: str = "none"
     spell: str = "none"
+
+
+class DetectionUpdate(BaseModel):
+    """detector가 보내는 현재 프레임의 실시간 인식 상태."""
+
+    gesture: str = "none"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    held_frames: int = Field(default=0, ge=0)
+    required_frames: int = Field(default=REQUIRED_HOLD_FRAMES, ge=1)
+    held_seconds: float = Field(default=0.0, ge=0.0)
+    required_seconds: float = Field(default=REQUIRED_HOLD_SECONDS, gt=0.0)
+    detected: bool = False
+
+
+class DetectionStatus(DetectionUpdate):
+    """Unreal UI가 읽는 손동작 이름과 누적 진행 상태."""
+
+    spell: str = "none"
+    progress: float = Field(default=0.0, ge=0.0, le=1.0)
+    confirmed: bool = False
 
 
 app = FastAPI(title="SpellCast Client Bridge")
@@ -65,6 +87,10 @@ app.add_middleware(
 latest_signal = LocalSignal()
 next_event_id = 1
 last_signal_read_at = 0.0
+
+latest_detection = DetectionStatus()
+latest_detection_at = 0.0
+DETECTION_STALE_SECONDS = 0.5
 
 # detector가 보내는 최신 JPEG 한 장을 메모리에 보관한다.
 latest_camera_frame: bytes | None = None
@@ -160,7 +186,12 @@ def receive_gesture(request: GestureRequest):
         raise HTTPException(status_code=400, detail="등록되지 않은 손동작입니다")
     if request.confidence < MIN_CONFIDENCE:
         return {"accepted": False, "reason": "신뢰도가 너무 낮습니다"}
-    if request.held_frames < REQUIRED_HOLD_FRAMES:
+    held_long_enough = (
+        request.held_seconds >= REQUIRED_HOLD_SECONDS
+        if request.held_seconds > 0.0
+        else request.held_frames >= REQUIRED_HOLD_FRAMES
+    )
+    if not held_long_enough:
         return {"accepted": False, "reason": "손동작 유지 프레임이 부족합니다"}
 
     signal = LocalSignal(
@@ -200,7 +231,69 @@ def get_signal():
 def reset_signal():
     """에디터 테스트를 다시 시작할 때 이벤트 번호를 초기화한다."""
     clear_signal_state()
+    clear_detection_state()
     return {"reset": True}
+
+
+def empty_detection_status() -> DetectionStatus:
+    return DetectionStatus(
+        required_frames=latest_detection.required_frames,
+        required_seconds=latest_detection.required_seconds,
+    )
+
+
+def clear_detection_state() -> None:
+    """실시간 손동작 UI 상태를 미탐지로 초기화한다."""
+    global latest_detection, latest_detection_at
+    latest_detection = empty_detection_status()
+    latest_detection_at = 0.0
+
+
+@app.post("/detection", response_model=DetectionStatus)
+def update_detection(request: DetectionUpdate):
+    """detector의 최신 손동작과 누적 프레임을 UI용 상태로 저장한다."""
+    global latest_detection, latest_detection_at
+
+    gesture = request.gesture.strip().lower()
+    spell = SPELL_BY_GESTURE.get(gesture)
+    if request.detected and spell is None:
+        raise HTTPException(status_code=400, detail="등록되지 않은 손동작입니다")
+
+    if not request.detected:
+        latest_detection = DetectionStatus(
+            required_frames=request.required_frames,
+            required_seconds=request.required_seconds,
+        )
+    else:
+        if request.held_seconds > 0.0:
+            progress = min(request.held_seconds / request.required_seconds, 1.0)
+            confirmed = request.held_seconds >= request.required_seconds
+        else:
+            # 구버전 detector와 수동 API 호출도 계속 지원한다.
+            progress = min(request.held_frames / request.required_frames, 1.0)
+            confirmed = request.held_frames >= request.required_frames
+        latest_detection = DetectionStatus(
+            gesture=gesture,
+            spell=spell or "none",
+            confidence=request.confidence,
+            held_frames=request.held_frames,
+            required_frames=request.required_frames,
+            held_seconds=request.held_seconds,
+            required_seconds=request.required_seconds,
+            detected=True,
+            progress=progress,
+            confirmed=confirmed,
+        )
+    latest_detection_at = time.monotonic()
+    return latest_detection
+
+
+@app.get("/detection", response_model=DetectionStatus)
+def get_detection():
+    """Unreal UMG가 표시할 최신 실시간 손동작 상태를 반환한다."""
+    if time.monotonic() - latest_detection_at > DETECTION_STALE_SECONDS:
+        return empty_detection_status()
+    return latest_detection
 
 
 @app.post("/camera/frame")
@@ -255,8 +348,8 @@ img{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 <script>
 const image=document.getElementById('camera');
 function refresh(){image.src='/camera/latest.jpg?t='+Date.now()}
-image.onload=()=>setTimeout(refresh,20);
-image.onerror=()=>setTimeout(refresh,100);
+image.onload=()=>setTimeout(refresh,100);
+image.onerror=()=>setTimeout(refresh,200);
 refresh();
 </script>
 </body>

@@ -80,7 +80,7 @@ SPELLCAST 게임 메커니즘 기획서
     코스트: 2
     역할: 기본 공격
     효과: 직선으로 빠르게 날아가 단일 대상에게 피해를 준다.
-    비고: [프로젝트 흔적] fist -> fire_ball 매핑이 README와 테스트 코드에 존재한다.
+    비고: 현재 탐지 결과는 fist -> FireBall로 ESpellID와 동일하게 전달한다.
 
 02) 윈드 블라스트 (Wind Blast)
     손동작: palm / 한손
@@ -88,7 +88,7 @@ SPELLCAST 게임 메커니즘 기획서
     역할: 저비용 투사체 방어
     효과: 자신에게 날아오는 가장 가까운 적 투사체 하나를 소멸시킨다.
     즉발형 마법과 메테오는 막을 수 없다.
-    비고: [프로젝트 흔적] palm -> wind_blast 매핑이 존재한다.
+    비고: 현재 탐지 결과는 palm -> WindBlast로 ESpellID와 동일하게 전달한다.
 
 03) 아이스 스피어 (Ice Spear)
     손동작: peace / 한손
@@ -96,7 +96,7 @@ SPELLCAST 게임 메커니즘 기획서
     역할: 견제, 코스트 감소
     효과: 빠른 얼음 창을 자동 발사한다. 적중하면 피해를 주고 상대 코스트를 즉시 1 감소시킨다.
     방어막에 막히거나 윈드 블라스트로 제거되면 코스트도 감소하지 않는다.
-    비고: [프로젝트 흔적] 기존 v -> ice_spear를 HaGRIDv2의 peace로 정규화했다.
+    비고: 기존 v 손동작을 HaGRIDv2의 peace로 정규화하고 IceSpear로 전달한다.
 
 04) 라이트닝 (Lightning)
     손동작: rock / 한손
@@ -198,16 +198,18 @@ SPELLCAST 게임 메커니즘 기획서
 
 9. 현재 프로젝트에서 확인된 기존 흔적
 --------------------------------------
-- fist -> fire_ball
-- v -> ice_spear
-- palm -> wind_blast
-- thumb -> heal
-- index -> lightning
-- both_hands -> ultimate
+- fist -> FireBall
+- palm -> WindBlast
+- peace -> IceSpear
+- rock -> Lightning
+- like -> Recovery
+- grip -> ManaDrain
+- holy -> Meteor
+- xsign -> ArcaneBarrier
+- hand_heart -> HeartSanctuary
+- ok -> ManaSurge
 
-위 매핑은 초기 HTTP 통신 테스트용으로만 존재하며 코스트나 구체 효과는 구현되어 있지 않다.
-현재 기획에서는 실제 HaGRIDv2 클래스명에 맞게 v를 peace, thumb를 like,
-index를 rock으로 바꾸고, 모호한 both_hands 대신 구체적인 양손 클래스 3개를 사용한다.
+모든 spell 문자열은 ESpellID와 Data Table 행 이름의 대소문자까지 동일하게 전달한다.
 
 
 10. 추후 확정할 항목
