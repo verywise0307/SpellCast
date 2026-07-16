@@ -294,3 +294,90 @@ BeginPlay
 - `git reset --hard`, `git checkout --` 같은 복구 명령을 함부로 실행하지 않는다.
 - 다른 PC에서 이어서 작업하기 전에 Unreal Editor에서 Blueprint를 컴파일하고 모두 저장한다.
 - 필요한 파일을 커밋한 뒤 원격 저장소에 push해야 다른 PC에서 받을 수 있다.
+
+## 2026-07-17 추가 인수인계: 로컬 실행과 화염구 작업 중단 지점
+
+### 로컬 브리지와 웹캠 확인
+
+- 이 PC에서는 처음에 전역 Python에 `uvicorn`이 없었고 `client_bridge/.venv`도 존재하지 않았다.
+- 다음 순서로 가상환경을 만들어 로컬 브리지를 실행했다.
+
+```powershell
+python -m venv client_bridge\.venv
+.\client_bridge\.venv\Scripts\python.exe -m pip install -r client_bridge\requirements.txt
+.\client_bridge\.venv\Scripts\python.exe -m uvicorn client_bridge.main:app --host 127.0.0.1 --port 8000
+```
+
+- detector 전용 환경도 필요하다. 브리지는 `detect/.venv/Scripts/python.exe`가 있으면 그것으로 detector를 실행한다.
+
+```powershell
+python -m venv detect\.venv
+.\detect\.venv\Scripts\python.exe -m pip install -r detect\requirements.txt
+```
+
+- `http://127.0.0.1:8000/camera`에서 처음 잠시 검은 화면이 나온 뒤 영상이 정상 표시되는 것을 확인했다.
+- 검은 화면은 detector 시작, YOLO 모델 로딩, 카메라 초기화와 첫 JPEG 전송까지 걸리는 초기 지연이었다.
+- 서버 로그에서 `POST /camera/frame` 204, `POST /detection` 200, `GET /camera/latest.jpg` 200이 반복되어 프레임과 탐지 상태 전송도 확인했다.
+- 다음 수동 실행에서는 카메라 0번의 OpenCV 창이 정상 표시됐다.
+
+```powershell
+.\detect\.venv\Scripts\python.exe detect\main.py --show-window --camera 0
+```
+
+- 수동 detector와 브리지가 자동 실행한 detector를 동시에 켜면 웹캠 장치 점유가 충돌할 수 있으므로 동시에 실행하지 않는다.
+- 간헐적인 `ConnectionResetError: [WinError 10054]`는 detector의 HTTP 전송 timeout이 0.1초로 짧아 연결을 먼저 끊을 때 생기는 부수 로그로 보인다. 영상은 계속 정상 전송됐다. 아직 코드는 수정하지 않았다.
+
+### 화염구 작업 중인 Unreal 자산
+
+아직 커밋하지 않은 사용자 작업이 존재한다. 특히 다음 신규 자산은 삭제하거나 되돌리지 않는다.
+
+```text
+/Game/blueprints/spells/BP_FireBall
+/Game/blueprints/spells/M_FireBall
+/Game/blueprints/spells/NS_fire
+```
+
+- `BP_FireBall.uasset`, `M_FireBall.uasset`, `NS_fire.uasset`이 신규 생성됐다.
+- `NS_fire.uasset`은 약 16MB다.
+- `BP_witch`, `BP_enemywitch`, `BP_playercontroller`가 수정됐다.
+- `SpellCast.uproject`에서 `NiagaraFluids` 플러그인이 활성화됐다.
+- 여러 UI 텍스처 및 주문 카드 `.uasset`도 Unreal Editor에 의해 수정 상태다. 바이너리 자산이므로 의도 없는 변경인지 에디터 재저장인지 다음 작업자가 확인한다.
+
+### 화염구 구현 대화에서 정한 방향
+
+- 실제 마법 실행 함수는 `BP_witch` 안에 있다.
+- 따라서 `BP_witch`의 마법 실행 함수 내부에서는 `Self`가 곧 시전자 Pawn이다. 별도의 `CasterPawn`을 PlayerState에 저장하지 않는다.
+- `BP_playercontroller`의 서버 RPC는 주문 유효성 검사와 `CommitCast`를 처리한 뒤, `Get Controlled Pawn -> Cast to BP_witch -> 마법 실행 함수` 순서로 호출하는 구성이 적절하다.
+- 화염구 액터에는 충돌 컴포넌트, Niagara 또는 Mesh, `Projectile Movement Component`를 사용한다.
+- 포물선 발사는 `Suggest Projectile Velocity Custom Arc`로 `StartPos`, `EndPos`, `LaunchVelocity`를 계산한 뒤 화염구를 Spawn하고 Projectile Movement의 Velocity를 설정하는 방향으로 논의했다.
+- 시작 위치 초안:
+
+```text
+CasterLocation = Self.GetActorLocation
+Direction = Normalize(TargetLocation - CasterLocation)
+StartPos = CasterLocation + Direction * 100 + (0, 0, 100)
+EndPos = TargetLocation + (0, 0, 80)
+```
+
+- 멀티플레이 목표는 Game State의 Player Array에서 시전자 PlayerState와 다른 PlayerState를 찾아 그 Pawn을 사용하는 방식을 논의했다.
+- 혼자 PIE 테스트할 때 상대 PlayerState가 없으므로, 맵의 연습 표적 또는 `BP_enemywitch`에 `SpellTarget` Actor Tag를 붙이고 대체 목표로 찾는 방식을 논의했다.
+- 권장 목표 선택 우선순위:
+
+```text
+1. 다른 플레이어의 Pawn
+2. SpellTarget 태그가 붙은 연습 표적
+3. 둘 다 없으면 발사하지 않음
+```
+
+- `TargetActor`는 화염구 실행 순간에만 필요한 값이므로 PlayerState에 영구 저장하기보다 마법 실행 함수의 지역 변수로 두는 방향이다.
+- 장기적으로 상대 관계를 저장해야 한다면 Pawn 참조보다 `OpponentPlayerState`를 PlayerState에 저장하고 필요할 때 `Get Pawn`으로 현재 Pawn을 얻는 편이 리스폰에 안전하다.
+- Projectile Spawn은 Listen Server 권한에서 수행하고 `BP_FireBall`의 `Replicates`, `Replicate Movement`를 활성화해야 한다.
+- Spawn 시 `Owner`는 Controller 또는 시전자, `Instigator`는 `BP_witch Self`로 설정하고 충돌 시 `Other Actor != Get Instigator`를 확인해야 한다.
+
+### 정확한 중단 지점 및 다음 작업
+
+- 사용자가 화염구 Blueprint를 만들다가 중단했다. 위 로직이 실제 노드로 어디까지 연결됐는지는 `.uasset` 바이너리라 확인하지 못했다.
+- 다음 작업자는 Unreal Editor에서 `BP_FireBall`, `BP_witch`, `BP_playercontroller`를 열어 컴파일 오류와 현재 노드 연결부터 확인한다.
+- 우선 혼자 PIE에서 `SpellTarget` 표적으로 포물선 발사, 충돌, Destroy까지 검증한다.
+- 그 다음 Listen Server + Client에서 양쪽 시전자 기준으로 반대편 Pawn을 목표로 잡는지 확인한다.
+- 아직 피해량 적용, 폭발 효과, 서버 권한 피격 처리의 완료 여부는 확인되지 않았다.
