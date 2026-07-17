@@ -1,6 +1,6 @@
 # SpellCast Codex 인수인계
 
-최종 갱신: 2026-07-16
+최종 갱신: 2026-07-17
 
 이 문서는 다른 PC에서 프로젝트를 이어서 작업하기 위한 최신 상태 기록이다. 실제 코드와 루트 `README.md`가 이 문서와 다르면 실제 코드를 우선한다.
 
@@ -381,3 +381,157 @@ EndPos = TargetLocation + (0, 0, 80)
 - 우선 혼자 PIE에서 `SpellTarget` 표적으로 포물선 발사, 충돌, Destroy까지 검증한다.
 - 그 다음 Listen Server + Client에서 양쪽 시전자 기준으로 반대편 Pawn을 목표로 잡는지 확인한다.
 - 아직 피해량 적용, 폭발 효과, 서버 권한 피격 처리의 완료 여부는 확인되지 않았다.
+
+## 2026-07-17 추가 인수인계: 화염구 비행과 손패 카드 사용 애니메이션
+
+### 현재 Git 작업 상태
+
+최신 커밋은 `fa27fbe 파이어볼에셋추가`이며 `main`, `origin/main`에 반영되어 있다. 이 커밋에는 화염구 Blueprint, 머티리얼, Niagara 시스템과 관련 Blueprint 변경 및 `NiagaraFluids` 플러그인 활성화가 포함된다.
+
+커밋 이후 다음 Unreal 바이너리 자산이 다시 수정된 상태다. 사용자 작업이므로 삭제하거나 되돌리지 않는다.
+
+```text
+/Game/UI/WBP/WBP_holdingspell
+/Game/blueprints/BP_witch
+/Game/blueprints/spells/BP_FireBall
+```
+
+이 변경은 화염구의 비행 시간 조절과 손패 카드 사용 애니메이션 작업에 해당한다. `.uasset` 내부 노드 연결은 텍스트로 검증할 수 없으므로 Unreal Editor에서 컴파일 및 실제 실행으로 확인한다.
+
+### 화염구 이동 구현의 현재 방향
+
+- `Suggest Projectile Velocity Custom Arc`는 액터를 직접 이동시키지 않고 발사 속도 벡터만 계산한다.
+- 계산 결과를 Spawn된 `BP_FireBall`의 `Projectile Movement Component -> Velocity`에 적용해야 한다.
+- `Projectile Movement`의 `Updated Component`는 화염구의 Root Collision Component를 가리켜야 한다.
+- `Simulation Enabled`, `Auto Activate`를 켜고 `Max Speed`는 계산 속도를 제한하지 않도록 충분히 크게 두거나 `0`으로 둔다.
+- 월드 좌표로 계산한 속도를 넣을 때 `Velocity in Local Space`를 사용하지 않는다.
+
+사용자가 목표 지점까지 정확히 3초 동안 비행하기를 원해 `Suggest Projectile Velocity Custom Arc` 대신 비행 시간을 기준으로 초기 속도를 직접 계산하는 방향으로 변경했다.
+
+```text
+FlightTime = 3.0
+Delta = EndPos - StartPos
+
+Velocity.X = Delta.X / FlightTime
+Velocity.Y = Delta.Y / FlightTime
+Velocity.Z = Delta.Z / FlightTime - 0.5 * GravityZ * GravityScale * FlightTime
+```
+
+Unreal 기본 월드 중력 `GravityZ = -980`일 때 Z 보정값은 다음과 같다.
+
+```text
+ZCorrection = 1470 * ProjectileGravityScale
+```
+
+현재 추천값은 낮은 포물선을 위한 다음 설정이다.
+
+```text
+Projectile Gravity Scale = 0.2
+Flight Time = 3.0
+Z Correction = 294
+
+Velocity.X = Delta.X / 3
+Velocity.Y = Delta.Y / 3
+Velocity.Z = Delta.Z / 3 + 294
+```
+
+현재 Unreal 버전/노드 검색에서는 `Vector / Float`, `Scale Vector`, `Vector * Float`가 바로 노출되지 않았다. 따라서 Blueprint에서 `Break Vector`로 Delta를 X/Y/Z Float로 나누고 각 값을 `3.0`으로 나눈 뒤, Z에 보정값을 더하고 `Make Vector`로 다시 합치는 방식으로 안내했다.
+
+중요: `Projectile Gravity Scale`만 낮추고 Z 보정값을 계속 `1470`으로 두면 화염구가 과도하게 위로 솟는다. 중력 스케일과 Z 보정값은 반드시 같은 비율로 맞춘다. 목표 전 충돌, Projectile Movement의 속도 제한, 다른 중력 설정이 있으면 실제 도착 시간이 3초보다 짧아지거나 달라질 수 있다.
+
+### 손패 카드 사용 애니메이션
+
+목표 UX는 다음과 같다.
+
+```text
+마법 사용
+-> 사용한 카드가 위로 이동하며 투명해짐
+-> 애니메이션 종료
+-> 사용한 카드 제거 또는 슬롯 데이터 교체
+-> 남은 카드가 빈자리를 채움
+-> 새 카드가 마지막 슬롯으로 들어옴
+```
+
+카드 공통 Widget Blueprint인 `WBP_holdingspell`에 사용 애니메이션을 두는 방향이다. 같은 Widget Blueprint로 만들어진 카드 인스턴스는 모두 같은 애니메이션 정의를 가지며, 함수를 호출한 카드 인스턴스만 재생된다.
+
+권장 애니메이션 예시:
+
+```text
+UseCardAnim1, 0.0초:
+  Translation Y = 0
+  Render Opacity = 1
+  Scale = 1.0
+
+UseCardAnim1, 약 0.4초:
+  Translation Y = -250
+  Render Opacity = 0
+  Scale = 0.85
+```
+
+- 카드의 이미지, 텍스트 등 전체를 감싸는 `CardRoot` 위젯에 Render Transform과 Render Opacity 트랙을 적용한다.
+- `WBP_holdingspell` 내부에 `PlayUseAnimation` 같은 Public 함수 또는 Custom Event를 만들고 그 안에서 `Play Animation(UseCardAnim1)`을 호출한다.
+- 다른 Blueprint에서는 화면에 생성된 실제 `WBP_holdingspell Object Reference`를 저장한 뒤 `PlayUseAnimation`을 호출한다. Class Reference만으로는 인스턴스 애니메이션을 실행할 수 없다.
+- 부모 손패 위젯에 Designer로 카드를 배치했다면 해당 카드의 `Is Variable`을 켠다.
+- 여러 카드가 동적으로 생성된다면 카드 위젯 참조 배열에서 사용한 카드 Index를 찾아 그 인스턴스에만 `PlayUseAnimation`을 호출한다.
+
+애니메이션 종료 처리에서 다음 오류가 발생했었다.
+
+```text
+Animation Finished (UseCardAnim1) 시그니처 오류:
+선택된 함수/이벤트가 바인딩 가능하지 않습니다.
+```
+
+해결 방향:
+
+- `Bind to Animation Finished`의 빨간 Delegate 핀에서 새 `Custom Event`를 직접 생성해 올바른 시그니처를 자동으로 맞춘다.
+- 완료 이벤트는 입력값과 반환값이 없어야 하며 Pure 함수가 아니어야 한다.
+- 함수에 `Delay` 같은 latent 노드를 넣지 않는다. 지연이 필요하면 Custom Event에서 처리한다.
+- 해당 Unreal 버전에서 `Animation Finished (UseCardAnim1)` 전용 이벤트가 자동 제공되면 별도 Bind 없이 그 이벤트의 실행 핀에서 후속 로직을 연결한다.
+- Bind는 `Event Construct` 등에서 한 번만 수행하고, 매 카드 사용 때 중복 Bind하지 않는다.
+
+권장 부모/자식 책임 분리:
+
+```text
+WBP_holdingspell:
+  PlayUseAnimation
+  -> 입력 비활성화
+  -> UseCardAnim1 재생
+  -> 종료 시 CardUseAnimationFinished Dispatcher 호출
+
+부모 손패 UI:
+  Dispatcher 수신
+  -> SpellCycle/UI 데이터 갱신
+  -> 슬롯 Refresh
+  -> 새 마지막 카드 진입 애니메이션 재생
+```
+
+`Delay 0.4 -> Remove From Parent`는 임시 확인용으로만 사용하고, 실제 구현에서는 Animation Finished 이벤트를 기준으로 카드 데이터와 UI를 갱신한다.
+
+### Widget Image의 Texture2D 참조
+
+Widget의 `Image`에 지정된 실제 Texture2D가 필요하면 다음 순서로 가져올 수 있다.
+
+```text
+Image Widget Reference
+-> Get Brush
+-> Break Slate Brush / Get Resource Object
+-> Cast To Texture2D
+```
+
+버전에 따라 `Get Brush Resource as Texture2D`가 바로 제공될 수 있다. 반대로 Texture2D를 Image에 적용할 때는 `Set Brush From Texture`를 사용한다. 다만 주문 종류 판정은 표시용 Texture 비교가 아니라 `ESpellID` 또는 별도 `SpellType` 데이터로 처리한다.
+
+### 다음 작업자가 Unreal Editor에서 확인할 순서
+
+1. `BP_FireBall`, `BP_witch`, `WBP_holdingspell`을 열고 Compile 오류를 확인한다.
+2. `BP_FireBall`의 Projectile Gravity Scale과 Z 보정값이 서로 일치하는지 확인한다. 현재 목표값은 `0.2`와 `294`다.
+3. StartPos/EndPos를 Print String 또는 디버그 표시로 확인하고, 화염구가 장애물 없이 약 3초 후 EndPos에 도착하는지 측정한다.
+4. 사용한 카드 인스턴스 하나만 `UseCardAnim1`을 재생하는지 확인한다.
+5. Animation Finished가 한 번만 호출되고, 이후 손패 배열/슬롯 갱신 및 새 카드 표시가 실행되는지 확인한다.
+6. 서버의 `SpellCycle` 갱신과 로컬 UI 애니메이션의 순서를 맞춘다. UI만 먼저 바꾸지 말고 서버에서 승인된 마법 사용 결과를 기준으로 최종 손패를 갱신한다.
+7. Listen Server + Client에서 화염구 Spawn/Movement 복제와 각 플레이어 손패 UI가 서로 독립적으로 동작하는지 확인한다.
+
+### 프로젝트 설정에서 발견한 주의점
+
+- 프로젝트는 Unreal Engine `5.3` 연결이며 `HttpBlueprint`, `JsonBlueprintUtilities`, `WebBrowserWidget`, `NiagaraFluids`가 활성화되어 있다.
+- `DefaultEngine.ini`의 `GameDefaultMap`, `EditorStartupMap`, `GlobalDefaultGameMode`는 아직 Third Person 템플릿 경로를 가리킨다. 실제 테스트가 `battlemap`과 `BP_gamemode`를 전제로 한다면 패키징/독립 실행 전에 Project Settings에서 기본 맵과 GameMode를 명시적으로 확인한다.
+- Blueprint와 Widget의 세부 노드는 `.uasset` 바이너리라 저장소의 텍스트 검사만으로 완료 여부를 확정할 수 없다. 이 문서의 최근 Blueprint 항목은 사용자와의 구현 대화 및 변경 파일 목록을 기준으로 작성됐다.
