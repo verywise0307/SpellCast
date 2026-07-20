@@ -12,6 +12,7 @@ from ultralytics import YOLO
 GESTURE_LABELS = {
     "fist": "Fire Ball",
     "palm": "Wind Blast",
+    "stop": "Wind Blast",
     "peace": "Ice Spear",
     "rock": "Lightning",
     "like": "Recovery",
@@ -19,6 +20,9 @@ GESTURE_LABELS = {
     "holy": "Meteor",
     "xsign": "Arcane Barrier",
     "hand_heart": "Heart Sanctuary",
+    "hand_heart2": "Heart Sanctuary",
+    "heart": "Heart Sanctuary",
+    "heart2": "Heart Sanctuary",
     "ok": "Mana Surge",
 }
 

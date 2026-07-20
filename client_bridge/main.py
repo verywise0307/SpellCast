@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 SPELL_BY_GESTURE = {
     "fist": "FireBall",
     "palm": "WindBlast",
+    "stop": "WindBlast",
     "peace": "IceSpear",
     "rock": "Lightning",
     "like": "Recovery",
@@ -29,6 +30,9 @@ SPELL_BY_GESTURE = {
     "holy": "Meteor",
     "xsign": "ArcaneBarrier",
     "hand_heart": "HeartSanctuary",
+    "hand_heart2": "HeartSanctuary",
+    "heart": "HeartSanctuary",
+    "heart2": "HeartSanctuary",
     "ok": "ManaSurge",
 }
 
