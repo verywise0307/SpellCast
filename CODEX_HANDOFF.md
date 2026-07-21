@@ -535,3 +535,91 @@ Image Widget Reference
 - 프로젝트는 Unreal Engine `5.3` 연결이며 `HttpBlueprint`, `JsonBlueprintUtilities`, `WebBrowserWidget`, `NiagaraFluids`가 활성화되어 있다.
 - `DefaultEngine.ini`의 `GameDefaultMap`, `EditorStartupMap`, `GlobalDefaultGameMode`는 아직 Third Person 템플릿 경로를 가리킨다. 실제 테스트가 `battlemap`과 `BP_gamemode`를 전제로 한다면 패키징/독립 실행 전에 Project Settings에서 기본 맵과 GameMode를 명시적으로 확인한다.
 - Blueprint와 Widget의 세부 노드는 `.uasset` 바이너리라 저장소의 텍스트 검사만으로 완료 여부를 확정할 수 없다. 이 문서의 최근 Blueprint 항목은 사용자와의 구현 대화 및 변경 파일 목록을 기준으로 작성됐다.
+
+## 2026-07-21 추가 인수인계: 게임 페이즈, UI, 마나 재생
+
+### 게임 페이즈 구조와 해결된 문제
+
+- `BP_GameState`에 `E_GamePhase` 타입의 `GamePhase`를 두고 `RepNotify`로 설정했다.
+- 현재 단계는 `Waiting`, `Countdown`, `Playing`, `Finished`를 사용한다.
+- `BP_GameMode`가 서버에서 `SetGamePhase`를 호출하고, `BP_PlayerController`가 `OnGamePhaseChanged` Dispatcher에 Bind하여 UI와 카메라 연출에 반응하는 구조다.
+- `GameMode BeginPlay`에서 너무 빨리 `Countdown`을 설정하면 PlayerController가 Dispatcher에 Bind하기 전에 방송이 끝난다. 현재는 GameMode BeginPlay에 약 1초 지연을 두어 동작을 확인했다.
+- 장기적으로는 지연 시간에 의존하지 말고 PlayerController가 Bind 직후 현재 `GamePhase`를 읽어 `HandleGamePhaseChanged`를 한 번 직접 호출하는 편이 안전하다.
+- `SetGamePhase`의 `Set w/Notify` 뒤에서 Dispatcher를 직접 호출하고, `OnRep_GamePhase`에서도 Dispatcher를 호출해 UI가 두 번 생성되는 문제가 있었다.
+- 중복 호출 때문에 `WBP_choosecards_C_0`, `WBP_choosecards_C_1`이 겹쳐 생성됐고 버튼 클릭과 포커스가 이상해졌다.
+- 해결된 최종 형태는 다음과 같다.
+
+```text
+SetGamePhase
+-> Switch Has Authority
+-> Set w/Notify GamePhase
+
+OnRep_GamePhase
+-> Call OnGamePhaseChanged(GamePhase)
+```
+
+- `SetGamePhase` 안의 별도 `Call OnGamePhaseChanged`는 제거했다. 이 수정 후 Choose Cards UI의 버튼 클릭 문제가 해결됐다.
+
+### UI와 카메라 책임
+
+- GameMode는 서버에만 있으므로 UI와 카메라를 직접 제어하지 않는다.
+- `BP_PlayerController.HandleGamePhaseChanged`에서 `Is Local Controller`를 확인한 뒤 UI 생성과 `Set View Target with Blend`를 실행한다.
+- 레벨에 배치된 카메라는 Actor Tag `CountdownCamera`로 찾는 방향을 사용했다.
+- PlayerController 내부의 Owning Player, Input Mode, Show Mouse Cursor, View Target 대상은 `Get Player Controller(0)`보다 `Self`를 사용한다.
+- 최상위 UI는 PlayerController가 생성하고 참조를 보관하는 방향이 권장된다.
+- `WBP_choosecards`는 카드 선택만 담당하고, `WBP_holdingspell`, `WBP_playerstate` 같은 게임 HUD 생성은 PlayerController의 `GetPlayingUI` 또는 별도 `ShowGameHUD` 함수로 옮기는 중이다.
+- 생성한 위젯 참조에 `Is Valid` 검사를 넣어 중복 생성을 막을 것.
+
+### 마나 재생 현재 상태
+
+- `BP_PlayerController`의 `Server_StartManaRegen`은 `Run on Server`, Reliable인 Custom Event다.
+- 서버 이벤트에서 자신의 PlayerState를 `BP_SpellCastPlayerState`로 Cast한 뒤 `StartManaRegen`을 호출한다.
+- `BP_SpellCastPlayerState.StartManaRegen`은 Authority에서 `Set Timer by Event`를 실행한다.
+- `Create Event`의 Object는 `Self`, 연결 함수는 입력/출력이 없는 `RegenerateMana()`이며 2초 반복으로 실제 호출되는 것까지 Print String으로 확인했다.
+- `RegenerateMana`가 실행되지 않은 것이 아니라 함수 끝의 Print까지 도달하지 않았던 문제였다. 함수 시작에 넣은 `5 재생 실행` Print는 정상 출력됐다.
+- 현재 `RegenerateMana` 내부 조건은 `Has Authority`와 `Mana < MaxMana`다. 증가가 안 되면 `Mana`, `MaxMana` 실제 값을 출력해 확인해야 한다. 특히 둘 다 0이거나 이미 같으면 두 번째 Branch는 False다.
+- 다음 구조로 마나 재생 생명주기를 완성해야 한다.
+
+```text
+StartManaRegen
+-> Authority
+-> Mana < MaxMana
+-> 기존 Regen Timer가 비활성일 때만 반복 Timer 시작
+
+RegenerateMana
+-> Mana = Clamp(Mana + 1, 0, MaxMana)
+-> Mana >= MaxMana이면 Clear and Invalidate Timer by Handle
+
+CommitCast
+-> Mana 차감
+-> StartManaRegen 호출
+```
+
+- 이를 위해 `BP_SpellCastPlayerState`에 `ManaRegenTimerHandle` 변수(Timer Handle)가 필요하다.
+- `CommitCast`에서 마나를 사용한 뒤 재생 타이머를 다시 시작하되, 이미 활성인 타이머를 중복 생성하지 않도록 검사해야 한다.
+
+### MP Progress Bar 작업 중 주의점
+
+- `BP_SpellCastPlayerState.CommitCast`에서 `Get All Widgets of Class`로 UI를 찾아 Progress Bar를 직접 변경하려다가 다음 런타임 오류가 발생했다.
+
+```text
+CallFunc_Array_Get_Item_1 프로퍼티를 읽으려던 중 None에 접근했습니다.
+Node: Set Percent
+Graph/Function: CommitCast
+Blueprint: BP_SpellCastPlayerState
+```
+
+- 직접 원인은 `WBP_playerstate.MPArray` 안의 항목 중 하나가 `None`인 상태에서 `Set Percent`를 호출한 것이다.
+- `WBP_playerstate.Event Construct`에서 디자이너의 10개 Progress Bar를 `Make Array -> Set MPArray`로 명시적으로 채우고 각 항목의 `Is Variable`을 확인해야 한다.
+- `Set Percent` 전에 `Is Valid(Array Element)` 검사도 추가한다.
+- 근본적으로 PlayerState에서 UI를 직접 찾거나 조작하지 않는다. PlayerState는 서버 권한의 Mana 값과 타이머만 관리하고, `WBP_playerstate`가 자신의 `MPArray`를 표시한다.
+- 10개 마나 바를 부드럽게 움직이려면 각 바의 목표값을 `Array Index < Mana ? 1.0 : 0.0`으로 계산하고, 위젯 쪽에서 현재 Percent를 `FInterp To`로 목표값에 보간하는 방향을 논의했다. 아직 최종 Blueprint 구현 및 PIE 검증은 완료되지 않았다.
+
+### 다음 작업 순서
+
+1. `BP_SpellCastPlayerState`에 `ManaRegenTimerHandle`을 만들고 최대 마나 도달 시 타이머를 Clear/Invalidate한다.
+2. `CommitCast`에서 마나 차감 후 `StartManaRegen`을 호출해 재생을 다시 시작한다.
+3. `StartManaRegen`에서 기존 타이머 활성 여부를 확인해 중복 타이머를 방지한다.
+4. `WBP_playerstate`의 10개 Progress Bar를 `MPArray`에 정상 초기화한다.
+5. `CommitCast`에서 위젯 탐색 및 `Set Percent` 로직을 제거하고, UI 갱신 책임을 `WBP_playerstate` 또는 PlayerController로 옮긴다.
+6. Listen Server + Client에서 Mana가 서버에서만 변경되고 RepNotify로 각 클라이언트 UI에 반영되는지 확인한다.
