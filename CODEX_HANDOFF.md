@@ -623,3 +623,118 @@ Blueprint: BP_SpellCastPlayerState
 4. `WBP_playerstate`의 10개 Progress Bar를 `MPArray`에 정상 초기화한다.
 5. `CommitCast`에서 위젯 탐색 및 `Set Percent` 로직을 제거하고, UI 갱신 책임을 `WBP_playerstate` 또는 PlayerController로 옮긴다.
 6. Listen Server + Client에서 Mana가 서버에서만 변경되고 RepNotify로 각 클라이언트 UI에 반영되는지 확인한다.
+
+## 2026-07-23 추가 인수인계: 마나 바 단순화, SpellCycle 검증, 번개 에셋
+
+### Git과 파일로 확인한 실제 작업
+
+최신 커밋 `7cd5d26 마법 에셋` 이후 다음 핵심 Unreal 자산이 실제로 수정 또는 추가된 상태다.
+
+```text
+M  /Game/UI/WBP/WBP_holdingspell
+M  /Game/assets/Free_Magic/Blueprints/BP_Free_Magic_Replay
+M  /Game/blueprints/BP_SpellCastPlayerState
+M  /Game/blueprints/BP_witch
+?? /Game/blueprints/spells/Lightning/BP_Lightning
+?? /Game/blueprints/spells/Lightning/lighting_pack_chain_lightning...
+?? /Game/blueprints/spells/Lightning/lightning1
+?? /Game/blueprints/spells/Lightning/lightning2
+?? /Game/blueprints/spells/Lightning/lightning3
+```
+
+기존 루트의 화염구 자산 3개는 Git에서 삭제로 보이지만 실제로는 다음 하위 폴더에 다시 존재한다. 삭제가 아니라 Content Browser에서 폴더를 정리하며 이동한 상태로 판단된다.
+
+```text
+/Game/blueprints/spells/FireBall/BP_FireBall
+/Game/blueprints/spells/FireBall/M_FireBall
+/Game/blueprints/spells/FireBall/NS_fire
+```
+
+`/Game/Fab`과 `testmap`의 External Actor가 대량 추가되었다. 번개 팩 임포트 또는 테스트맵 저장 과정에서 생성된 것으로 보이지만, 필요한 파일의 범위는 커밋 전에 Unreal Editor에서 확인해야 한다. 바이너리 `.uasset` 내부 노드 연결은 파일만으로 읽을 수 없으므로 위 목록은 저장 여부만 확인한 것이다.
+
+### 마나 시스템의 현재 방향
+
+10개의 개별 Progress Bar 배열을 조작하는 방향은 복잡성과 `None` 접근 오류 때문에 중단하고, 10칸 모양이 들어간 이미지 한 장을 단일 Progress Bar의 Fill Image로 사용하는 방향으로 단순화하기로 했다.
+
+목표 계산은 다음과 같다.
+
+```text
+DisplayedPercent = (Mana + RegenProgress) / 10.0
+```
+
+예를 들어 `Mana = 5`, `RegenProgress = 0.6`인 상태에서 비용 2를 사용하면 `Mana = 3`, `RegenProgress = 0.6`을 유지하여 전체 표시값이 `0.56 -> 0.36`으로 이동한다. 이 방식에서는 이전 Progress Bar의 Percent를 다른 칸으로 복사하거나 `PreMana`로 위젯 배열을 조회하지 않는다.
+
+현재 논의한 간단한 구현은 GamePhase가 `Playing`이 될 때 서버 PlayerState에서 0.1초 반복 타이머를 시작하는 방식이다. 한 마나가 2초에 차야 한다면 전체 바 진행률을 틱마다 `0.005` 증가시킨다.
+
+```text
+0.1초마다 ManaPercent += 0.005
+Mana = Floor((ManaPercent + 작은 보정값) * 10)
+ManaPercent >= 1.0이면 타이머 종료
+마법 사용 시 ManaPercent -= Cost / 10.0
+```
+
+`Server_StartManaRegen`은 `Get Player State(Index 0)` 대신 소유 `BP_playercontroller`의 `Self -> Player State`를 `BP_SpellCastPlayerState`로 Cast하여 호출하는 형태로 수정한 화면을 확인했다. 이 구조라면 각 컨트롤러가 자신의 PlayerState를 대상으로 한다.
+
+중요한 미완료/검증 사항:
+
+- `ManaPercent` 또는 이에 해당하는 서버 상태 변수는 PlayerState에서 권한 있게 변경하고 필요하면 RepNotify로 복제한다.
+- UMG Progress Bar 자체는 서버 상태로 사용하지 않고 클라이언트가 복제 값을 표시만 한다.
+- Float에 `== 0.1`을 사용하지 않는다. `>=` 또는 정수 단위 누적을 사용한다.
+- `ManaRegenTimerHandle`과 `Is Timer Active by Handle`로 중복 타이머 생성을 막는다.
+- 현재 Git에서는 `BP_SpellCastPlayerState` 변경은 확인되지만 `WBP_playerstate` 변경은 확인되지 않는다. 따라서 단일 Progress Bar UI가 실제 저장·완료됐다고 단정할 수 없으며 Unreal Editor에서 Compile/Save와 PIE 검증이 필요하다.
+- 최근 로그에서 같은 Mana 숫자가 짧은 간격으로 두 번 출력되는 구간이 있어, Print 위치가 서버/클라이언트 양쪽인지 또는 재생 타이머가 중복 생성됐는지 확인해야 한다.
+
+### SpellCycle 순환 검증 결과
+
+`CommitCast`의 `Remove Item -> Add` 뒤에 `For Each SpellCycle -> Enum to String -> Print String`을 연결하여 실제 배열을 로그로 확인했다. 확인된 순환은 다음과 같으며 배열 자체에는 중복이 없었다.
+
+```text
+FireBall 사용 후:
+WindBlast, IceSpear, Lightning, ManaDrain, Meteor, FireBall
+
+IceSpear 사용 후:
+WindBlast, Lightning, ManaDrain, Meteor, FireBall, IceSpear
+
+Lightning 사용 후:
+WindBlast, ManaDrain, Meteor, FireBall, IceSpear, Lightning
+
+WindBlast 사용 후:
+ManaDrain, Meteor, FireBall, IceSpear, Lightning, WindBlast
+
+ManaDrain 사용 후:
+Meteor, FireBall, IceSpear, Lightning, WindBlast, ManaDrain
+```
+
+따라서 화면에 나타난 중복 카드는 서버의 `SpellCycle` 데이터 중복이 아니라 UI 갱신 문제로 판단된다. 다음을 확인해야 한다.
+
+- 활성 3장은 0 기반 인덱스 `0`, `1`, `2`이며 `Index 3`은 네 번째 카드다.
+- 사용 후 새로 활성화되는 세 번째 카드는 변경된 배열의 `SpellCycle[2]`다.
+- 동적 생성 방식이면 `RefreshCards` 전에 컨테이너의 기존 Child를 제거한다.
+- 고정 카드 위젯이면 새 위젯을 Add하지 말고 기존 3개 위젯의 이미지/SpellID만 갱신한다.
+- `CommitCast` 직후 로컬 갱신과 `OnRep_SpellCycle` 갱신이 동시에 UI를 두 번 생성하지 않는지 확인한다.
+
+### 번개 에셋 작업
+
+번개 팩을 임포트했고 한 Static Mesh 안에 여러 번개 줄기가 포함된 에셋을 Modeling Mode로 분리하는 작업을 진행했다. 한 줄기가 다시 약 50개의 분리 메시 조각으로 나뉘는 경우, 해당 줄기를 구성하는 조각을 모두 선택하고 Modeling Mode의 `XForm -> Merge`로 하나의 새 Static Mesh로 합치는 방향을 안내했다.
+
+현재 저장된 번개 관련 자산은 `BP_Lightning`, 원본 번개 팩 자산, `lightning1`, `lightning2`, `lightning3`이다. 파일 존재와 저장 시각은 확인했지만 각 결과 메시가 정확히 어느 줄기를 합친 것인지와 Pivot/Material 상태는 Unreal Editor에서 열어 확인해야 한다.
+
+### 추가로 확인된 런타임 경고
+
+최근 `SpellCast.log`에 다음 경고가 반복된다.
+
+```text
+BP_Free_Magic_Replay Replay SetTimer passed a negative or zero time.
+```
+
+`BP_Free_Magic_Replay`의 Replay 타이머에 0 이하 시간이 전달되고 있다. 해당 자산도 실제 수정 상태이므로 커밋 전 Compile 후 타이머 Time, Initial Start Delay, Initial Start Delay Variance 값을 확인해야 한다.
+
+### 다음 작업 순서
+
+1. `BP_SpellCastPlayerState`의 실제 저장된 마나 타이머 그래프를 열어 중복 타이머 방지와 서버 권한 여부를 확인한다.
+2. 단일 마나 Progress Bar UI를 `WBP_playerstate`에 적용하고 Compile/Save한다.
+3. Listen Server + Client에서 서버 Mana 값과 각 클라이언트 표시가 일치하는지 확인한다.
+4. 카드 UI를 `SpellCycle[0..2]` 기준으로 한 번만 갱신하도록 수정하여 화면 중복을 제거한다.
+5. `BP_Lightning`과 `lightning1~3`의 메시, Pivot, Material, 충돌 및 복제 설정을 확인한다.
+6. `BP_Free_Magic_Replay`의 0 이하 SetTimer 경고를 수정한다.
+7. 대량의 Fab/testmap External Actor가 커밋에 필요한지 검토한 뒤 필요한 자산만 커밋한다.
