@@ -738,3 +738,13 @@ BP_Free_Magic_Replay Replay SetTimer passed a negative or zero time.
 5. `BP_Lightning`과 `lightning1~3`의 메시, Pivot, Material, 충돌 및 복제 설정을 확인한다.
 6. `BP_Free_Magic_Replay`의 0 이하 SetTimer 경고를 수정한다.
 7. 대량의 Fab/testmap External Actor가 커밋에 필요한지 검토한 뒤 필요한 자산만 커밋한다.
+## 2026-07-24 추가 인수인계: IceSpear 추가 및 주문 에셋 수정
+
+당일 작업의 상세 내용은 루트의 `HANDOFF_2026-07-24.md`에 정리했다.
+
+- 신규: `blueprints/spells/IceSpear/BP_IceSpear`, `M_IceSpear`, `NS_IceSpear`
+- 수정: `BP_witch`, `BP_WindBlast`, `Crouch_Walk_Back`, `M_Lightning`
+- `NS_IceSpear`는 최신 Unreal 로그에서 Niagara System 컴파일 성공이 확인됐다.
+- PIE 로그에서 IceSpear를 포함한 여러 주문 입력 출력이 확인됐지만, 충돌·피해·수명·네트워크 복제는 추가 검증이 필요하다.
+- `/signal`이 반환하는 `"none"`의 enum 변환 오류는 해결되지 않았고 최신 로그에서 1,426회 반복됐다.
+- 현재 Unreal 에셋 변경은 모두 미커밋 상태다. 세부 Git 목록과 다음 검증 순서는 날짜별 문서를 참고한다.
